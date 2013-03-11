@@ -3,6 +3,8 @@ EC2 CleanUp
 
 Utility to clean up AWS EC2 security groups and keypairs.
 
+- http://abstractvisitorpattern.blogspot.co.uk/2013/03/tidying-up-after-jclouds.html
+
 ## About
 
 Removes any unused objects in an EC2 region whose names match a regular expression.
