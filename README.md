@@ -37,12 +37,24 @@ Use the program as follows, substituting your EC2 access key and secret key for 
     security group 'jclouds#GmqCZ6hx#eu-west-1'
     [INFO] Deleted 1507 SecurityGroups
 
+**NOTE** It is not possible to delete a security group if it is being used by an active instance, but because key pairs are only needed when starting an instance they can always be deleted.
+
 The default region is Amazon Europe (`eu-west-1`) which can be changed by setting the first argument. The default regular expression is `jclouds#.*`. You can use a different regular expression by adding it as the second argument, and supplying a region name as the first argument. To delete a specific key pair or security group use the complete name as the regular expression and only that object will be deleted.
 
     % java -Daws-ec2.identity=XXXXXXXXXXXXXXXXXXXX -Daws-ec2.credential=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
         -jar target/ec2cleanup-0.1.0-SNAPSHOT-jar-with-dependencies.jar us-east-1 jclouds#grkvlt#.*
- 
-**NOTE** It is not possible to delete a security group if it is being used by an active instance, but because key pairs are only needed when starting an instance they can always be deleted.
+    [INFO] Cleaning SecurityGroups and KeyPairs in aws-ec2:us-east-1 matching 'jclouds#grkvlt#.*'
+    ...
+
+To check the existence of matching key-pairs and security groups _without_ deleting them, include `check` before any other arguments.
+
+    % java -Daws-ec2.identity=XXXXXXXXXXXXXXXXXXXX -Daws-ec2.credential=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \
+        -jar target/ec2cleanup-0.1.0-SNAPSHOT-jar-with-dependencies.jar check us-west-1
+    [INFO] Checking SecurityGroups and KeyPairs in aws-ec2:us-west-1 matching 'jclouds#.*'
+    [INFO] Found 761 matching KeyPairs
+    [INFO] Found 1259 matching SecurityGroups
+
+**NOTE** This means you cannot delete key pairs or security groups named `check`.
 
 ## License
 

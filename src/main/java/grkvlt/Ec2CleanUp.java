@@ -21,6 +21,7 @@
  */
 package grkvlt;
 
+import java.util.List;
 import java.util.Set;
 
 import org.jclouds.ContextBuilder;
@@ -38,9 +39,10 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.inject.Module;
 
 /**
@@ -65,15 +67,17 @@ public class Ec2CleanUp {
     private final String regexp;
     private final String identity;
     private final String credential;
+    private final boolean check;
 
     /**
      * Initialise the region and regular expressions.
      */
-    public Ec2CleanUp(String region, String regexp, String identity, String credential) {
+    public Ec2CleanUp(String region, String regexp, String identity, String credential, boolean check) {
         this.region = region;
         this.regexp = regexp;
         this.identity = identity;
         this.credential = credential;
+        this.check = check;
     }
 
     /**
@@ -104,26 +108,23 @@ public class Ec2CleanUp {
             public String apply(@Nullable KeyPair input) {
                 return input.getKeyName();
             }
-        }), new Predicate<String>() {
-            @Override
-            public boolean apply(@Nullable String input) {
-                return input.matches(regexp);
-            }
-        });
+        }), Predicates.containsPattern("^" + regexp + "$"));
         LOG.info("Found {} matching KeyPairs", Iterables.size(filtered));
-        int deleted = 0;
-        for (String name : filtered) {
-            try {
-                keyPairApi.deleteKeyPairInRegion(region, name);
-                deleted++;
-            } catch (Exception e) {
-                if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
-                    Thread.sleep(1000l); // Avoid triggering rate-limiter again
-                } 
-                LOG.warn("Error deleting KeyPair '{}': {}", name, e.getMessage());
+        if (!check) {
+            int deleted = 0;
+            for (String name : filtered) {
+                try {
+                    keyPairApi.deleteKeyPairInRegion(region, name);
+                    deleted++;
+                } catch (Exception e) {
+                    if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
+                        Thread.sleep(1000l); // Avoid triggering rate-limiter again
+                    }
+                    LOG.warn("Error deleting KeyPair '{}': {}", name, e.getMessage());
+                }
             }
+            LOG.info("Deleted {} KeyPairs", deleted);
         }
-        LOG.info("Deleted {} KeyPairs", deleted);
     }
 
     /**
@@ -136,26 +137,23 @@ public class Ec2CleanUp {
             public String apply(@Nullable SecurityGroup input) {
                 return input.getName();
             }
-        }), new Predicate<String>() {
-            @Override
-            public boolean apply(@Nullable String input) {
-                return input.matches(regexp);
-            }
-        });
+        }), Predicates.containsPattern("^" + regexp + "$"));
         LOG.info("Found {} matching SecurityGroups", Iterables.size(filtered));
-        int deleted = 0;
-        for (String name : filtered) {
-            try {
-                securityGroupApi.deleteSecurityGroupInRegion(region, name);
-                deleted++;
-            } catch (Exception e) {
-                if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
-                    Thread.sleep(1000l); // Avoid triggering rate-limiter again
-                } 
-                LOG.warn("Error deleting SecurityGroup '{}': {}", name, e.getMessage());
+        if (!check) {
+            int deleted = 0;
+            for (String name : filtered) {
+                try {
+                    securityGroupApi.deleteSecurityGroupInRegion(region, name);
+                    deleted++;
+                } catch (Exception e) {
+                    if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
+                        Thread.sleep(1000l); // Avoid triggering rate-limiter again
+                    }
+                    LOG.warn("Error deleting SecurityGroup '{}': {}", name, e.getMessage());
+                }
             }
+            LOG.info("Deleted {} SecurityGroups", deleted);
         }
-        LOG.info("Deleted {} SecurityGroups", deleted);
     }
 
     /**
@@ -179,11 +177,17 @@ public class Ec2CleanUp {
     public static void main(String...argv) throws Exception {
         String regionParam = AWS_EUROPE;
         String regexpParam = JCLOUDS_NAME_REGEXP;
+        boolean checkParam = Boolean.FALSE;
 
-        // Set region and regular expression for command line arguments
-        if (argv.length > 0) regionParam = argv[0];
-        if (argv.length > 1) regexpParam = argv[1];
-        LOG.info("Cleaning SecurityGroups and KeyPairs in aws-ec2:{} matching '{}'", regionParam, regexpParam);
+        // Set check, region and regular expression parameters from command line arguments
+        List<String> parameters = Lists.newArrayList(argv);
+        if (parameters.remove("check")) {
+            checkParam = Boolean.TRUE;
+        }
+        if (parameters.size() > 0) regionParam = parameters.get(0);
+        if (parameters.size() > 1) regexpParam = parameters.get(1);
+        LOG.info("{} SecurityGroups and KeyPairs in aws-ec2:{} matching '{}'",
+                new Object[] { checkParam ? "Checking" : "Cleaning", regionParam, regexpParam });
 
         // Set EC2 identity and credential from system properties
         String identityValue = System.getProperty(IDENTITY_PROPERTY);
@@ -193,7 +197,7 @@ public class Ec2CleanUp {
         Preconditions.checkNotNull(credentialValue, String.format("The %s property must be set to your EC2 secret key", CREDENTIAL_PROPERTY));
 
         // Initialise and then execute the cleanUp method
-        Ec2CleanUp cleaner = new Ec2CleanUp(regionParam, regexpParam, identityValue, credentialValue);
+        Ec2CleanUp cleaner = new Ec2CleanUp(regionParam, regexpParam, identityValue, credentialValue, checkParam);
         cleaner.cleanUp();
     }
 
