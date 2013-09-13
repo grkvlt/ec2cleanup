@@ -29,8 +29,13 @@ import org.jclouds.ec2.EC2AsyncClient;
 import org.jclouds.ec2.EC2Client;
 import org.jclouds.ec2.domain.KeyPair;
 import org.jclouds.ec2.domain.SecurityGroup;
+import org.jclouds.ec2.domain.Tag;
+import org.jclouds.ec2.domain.Volume;
+import org.jclouds.ec2.features.TagApi;
+import org.jclouds.ec2.services.ElasticBlockStoreClient;
 import org.jclouds.ec2.services.KeyPairClient;
 import org.jclouds.ec2.services.SecurityGroupClient;
+import org.jclouds.ec2.util.TagFilterBuilder;
 import org.jclouds.javax.annotation.Nullable;
 import org.jclouds.logging.slf4j.config.SLF4JLoggingModule;
 import org.jclouds.rest.RestContext;
@@ -38,11 +43,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Function;
+import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 import com.google.inject.Module;
 
 /**
@@ -90,6 +99,13 @@ public class Ec2CleanUp {
 
             deleteKeyPairs(api.getKeyPairServices());
             deleteSecurityGroups(api.getSecurityGroupServices());
+
+            Optional<? extends TagApi> tagApi = api.getTagApiForRegion(region);
+            if (tagApi.isPresent()) {
+                deleteVolumes(api.getElasticBlockStoreServices(), tagApi.get());
+            } else {
+                LOG.info("No tag API, not " + (check ? "checking" : "cleaning") + " volumes");
+            }
         } catch (Exception e) {
             LOG.error("{}", e.getMessage());
             System.exit(1);
@@ -156,6 +172,71 @@ public class Ec2CleanUp {
         }
     }
 
+    public void deleteVolumes(ElasticBlockStoreClient ebsApi, TagApi tagApi) throws Exception {
+        Iterable<String> filtered = "".equals(regexp)
+                ? getVolumesWithNoName(ebsApi, tagApi)
+                : getVolumesMatchingName(tagApi, regexp);
+        if (!check) {
+            int deleted = 0;
+            for (String id : filtered) {
+                try {
+                    ebsApi.deleteVolumeInRegion(region, id);
+                    deleted++;
+                } catch (Exception e) {
+                    if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
+                        Thread.sleep(1000l); // Avoid triggering rate-limiter again
+                    }
+                    LOG.warn("Error deleting Volume '{}': {}", id, e.getMessage());
+                }
+            }
+            LOG.info("Deleted {} Volumes", deleted);
+        }
+    }
+
+    private Iterable<String> getVolumesWithNoName(ElasticBlockStoreClient ebsApi, TagApi tagApi) {
+        Set<String> namedVolumes = tagApi.filter(new TagFilterBuilder().volume().key("Name").build())
+                .transform(new Function<Tag, String>() {
+                    @Override public String apply(Tag input) {
+                        return input.getResourceId();
+                    }
+                })
+                .toSet();
+        Set<String> allVolumes = FluentIterable.from(ebsApi.describeVolumesInRegion(region))
+                .transform(new Function<Volume, String>() {
+                    @Override
+                    public String apply(Volume input) {
+                        if (input.getId() == null && LOG.isTraceEnabled()) LOG.trace("No id on volume: " + input);
+                        return input.getId() != null ? input.getId() : null;
+                    }})
+                .filter(Predicates.notNull())
+                .toSet();
+        Set<String> unnamedVolumes = Sets.difference(allVolumes, namedVolumes);
+        LOG.info("Found {} unnamed Volumes", Iterables.size(unnamedVolumes));
+        return unnamedVolumes;
+    }
+
+    private Iterable<String> getVolumesMatchingName(TagApi tagApi, final String name) {
+        FluentIterable<Tag> volumeTags = tagApi.filter(new TagFilterBuilder()
+                .volume()
+                .key("Name")
+                .build());
+        LOG.info("Found {} named Volumes", Iterables.size(volumeTags));
+
+        FluentIterable<String> filtered = volumeTags
+                .filter(new Predicate<Tag>() {
+                    @Override
+                    public boolean apply(Tag input) {
+                        return Predicates.containsPattern("^" + name + "$").apply(input.getValue().orNull());
+                    }})
+                .transform(new Function<Tag, String>() {
+                    @Override
+                    public String apply(Tag input) {
+                        return input.getResourceId();
+                    }});
+        LOG.info("Found {} matching Volumes", Iterables.size(filtered));
+        return filtered;
+    }
+
     /**
      * Create a jclouds {@link RestContext} to access the EC2 API.
      */
@@ -186,7 +267,7 @@ public class Ec2CleanUp {
         }
         if (parameters.size() > 0) regionParam = parameters.get(0);
         if (parameters.size() > 1) regexpParam = parameters.get(1);
-        LOG.info("{} SecurityGroups and KeyPairs in aws-ec2:{} matching '{}'",
+        LOG.info("{} SecurityGroups, KeyPairs and Volumes in aws-ec2:{} matching '{}'",
                 new Object[] { checkParam ? "Checking" : "Cleaning", regionParam, regexpParam });
 
         // Set EC2 identity and credential from system properties

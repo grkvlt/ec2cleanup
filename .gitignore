@@ -2,6 +2,9 @@
 .classpath
 .project
 .settings
+.idea
+*.iml
+*.sw[op]
 
 # Package Files #
 *.jar
