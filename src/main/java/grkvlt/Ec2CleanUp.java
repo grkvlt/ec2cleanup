@@ -28,11 +28,14 @@ import org.jclouds.ContextBuilder;
 import org.jclouds.ec2.EC2AsyncClient;
 import org.jclouds.ec2.EC2Client;
 import org.jclouds.ec2.domain.KeyPair;
+import org.jclouds.ec2.domain.Reservation;
+import org.jclouds.ec2.domain.RunningInstance;
 import org.jclouds.ec2.domain.SecurityGroup;
 import org.jclouds.ec2.domain.Tag;
 import org.jclouds.ec2.domain.Volume;
 import org.jclouds.ec2.features.TagApi;
 import org.jclouds.ec2.services.ElasticBlockStoreClient;
+import org.jclouds.ec2.services.InstanceClient;
 import org.jclouds.ec2.services.KeyPairClient;
 import org.jclouds.ec2.services.SecurityGroupClient;
 import org.jclouds.ec2.util.TagFilterBuilder;
@@ -96,8 +99,8 @@ public class Ec2CleanUp {
         RestContext<EC2Client, EC2AsyncClient> context = getContext();
         try {
             EC2Client api = context.getApi();
-
-            deleteKeyPairs(api.getKeyPairServices());
+            
+            deleteKeyPairs(api.getKeyPairServices(), api.getInstanceServices());
             deleteSecurityGroups(api.getSecurityGroupServices());
 
             Optional<? extends TagApi> tagApi = api.getTagApiForRegion(region);
@@ -117,10 +120,10 @@ public class Ec2CleanUp {
     /**
      * Delete all matching {@link KeyPair}s.
      */
-    public void deleteKeyPairs(KeyPairClient keyPairApi) throws Exception {
+    public void deleteKeyPairs(KeyPairClient keyPairApi, InstanceClient instanceApi) throws Exception {
         Set<KeyPair> keys = keyPairApi.describeKeyPairsInRegion(region);
+        Set<? extends Reservation<? extends RunningInstance>> instances = instanceApi.describeInstancesInRegion(region);
         Iterable<String> filtered = Iterables.filter(Iterables.transform(keys, new Function<KeyPair, String>() {
-            @Override
             public String apply(@Nullable KeyPair input) {
                 return input.getKeyName();
             }
@@ -128,16 +131,26 @@ public class Ec2CleanUp {
         LOG.info("Found {} matching KeyPairs", Iterables.size(filtered));
         if (!check) {
             int deleted = 0;
+            
             for (String name : filtered) {
-                try {
-                    keyPairApi.deleteKeyPairInRegion(region, name);
-                    deleted++;
-                } catch (Exception e) {
-                    if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
-                        Thread.sleep(1000l); // Avoid triggering rate-limiter again
+                boolean notInUse = true;
+
+                for (Reservation<? extends RunningInstance> reservation : instances) {
+                    for ( RunningInstance instance : reservation) {
+                        notInUse &= (!name.equals(instance.getKeyName()));
                     }
-                    LOG.warn("Error deleting KeyPair '{}': {}", name, e.getMessage());
                 }
+                
+                if (notInUse)
+                    try {
+                        keyPairApi.deleteKeyPairInRegion(region, name);
+                        deleted++;
+                    } catch (Exception e) {
+                        if (e.getMessage() != null && e.getMessage().contains("RequestLimitExceeded")) {
+                            Thread.sleep(1000l); // Avoid triggering rate-limiter again
+                        }
+                        LOG.warn("Error deleting KeyPair '{}': {}", name, e.getMessage());
+                    }
             }
             LOG.info("Deleted {} KeyPairs", deleted);
         }
@@ -149,7 +162,6 @@ public class Ec2CleanUp {
     public void deleteSecurityGroups(SecurityGroupClient securityGroupApi) throws Exception {
         Set<SecurityGroup> groups = securityGroupApi.describeSecurityGroupsInRegion(region);
         Iterable<String> filtered = Iterables.filter(Iterables.transform(groups, new Function<SecurityGroup, String>() {
-            @Override
             public String apply(@Nullable SecurityGroup input) {
                 return input.getName();
             }
