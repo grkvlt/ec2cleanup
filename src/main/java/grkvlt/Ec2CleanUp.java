@@ -25,8 +25,7 @@ import java.util.List;
 import java.util.Set;
 
 import org.jclouds.ContextBuilder;
-import org.jclouds.ec2.EC2AsyncClient;
-import org.jclouds.ec2.EC2Client;
+import org.jclouds.ec2.EC2Api;
 import org.jclouds.ec2.domain.KeyPair;
 import org.jclouds.ec2.domain.Reservation;
 import org.jclouds.ec2.domain.RunningInstance;
@@ -34,10 +33,10 @@ import org.jclouds.ec2.domain.SecurityGroup;
 import org.jclouds.ec2.domain.Tag;
 import org.jclouds.ec2.domain.Volume;
 import org.jclouds.ec2.features.TagApi;
-import org.jclouds.ec2.services.ElasticBlockStoreClient;
-import org.jclouds.ec2.services.InstanceClient;
-import org.jclouds.ec2.services.KeyPairClient;
-import org.jclouds.ec2.services.SecurityGroupClient;
+import org.jclouds.ec2.features.ElasticBlockStoreApi;
+import org.jclouds.ec2.features.InstanceApi;
+import org.jclouds.ec2.features.KeyPairApi;
+import org.jclouds.ec2.features.SecurityGroupApi;
 import org.jclouds.ec2.util.TagFilterBuilder;
 import org.jclouds.javax.annotation.Nullable;
 import org.jclouds.logging.slf4j.config.SLF4JLoggingModule;
@@ -96,16 +95,14 @@ public class Ec2CleanUp {
      * Perform the cleanup.
      */
     public void cleanUp() throws Exception {
-        RestContext<EC2Client, EC2AsyncClient> context = getContext();
+        EC2Api api = getEC2Api();
         try {
-            EC2Client api = context.getApi();
-            
-            deleteKeyPairs(api.getKeyPairServices(), api.getInstanceServices());
-            deleteSecurityGroups(api.getSecurityGroupServices());
+            deleteKeyPairs(api.getKeyPairApi().orNull(), api.getInstanceApi().orNull());
+            deleteSecurityGroups(api.getSecurityGroupApi().orNull());
 
             Optional<? extends TagApi> tagApi = api.getTagApiForRegion(region);
             if (tagApi.isPresent()) {
-                deleteVolumes(api.getElasticBlockStoreServices(), tagApi.get());
+                deleteVolumes(api.getElasticBlockStoreApi().orNull(), tagApi.get());
             } else {
                 LOG.info("No tag API, not " + (check ? "checking" : "cleaning") + " volumes");
             }
@@ -113,14 +110,17 @@ public class Ec2CleanUp {
             LOG.error("{}", e.getMessage());
             System.exit(1);
         } finally {
-            context.close();
+            api.close();
         }
     }
 
     /**
      * Delete all matching {@link KeyPair}s.
      */
-    public void deleteKeyPairs(KeyPairClient keyPairApi, InstanceClient instanceApi) throws Exception {
+    public void deleteKeyPairs(KeyPairApi keyPairApi, InstanceApi instanceApi) throws Exception {
+        Preconditions.checkNotNull(keyPairApi, "keyPairApi");
+        Preconditions.checkNotNull(instanceApi, "instanceApi");
+
         Set<KeyPair> keys = keyPairApi.describeKeyPairsInRegion(region);
         Set<? extends Reservation<? extends RunningInstance>> instances = instanceApi.describeInstancesInRegion(region);
         Iterable<String> filtered = Iterables.filter(Iterables.transform(keys, new Function<KeyPair, String>() {
@@ -129,9 +129,10 @@ public class Ec2CleanUp {
             }
         }), Predicates.containsPattern("^" + regexp + "$"));
         LOG.info("Found {} matching KeyPairs", Iterables.size(filtered));
+
         if (!check) {
             int deleted = 0;
-            
+
             for (String name : filtered) {
                 boolean notInUse = true;
 
@@ -140,7 +141,7 @@ public class Ec2CleanUp {
                         notInUse &= (!name.equals(instance.getKeyName()));
                     }
                 }
-                
+
                 if (notInUse)
                     try {
                         keyPairApi.deleteKeyPairInRegion(region, name);
@@ -159,7 +160,9 @@ public class Ec2CleanUp {
     /**
      * Delete all matching {@link SecurityGroup}s.
      */
-    public void deleteSecurityGroups(SecurityGroupClient securityGroupApi) throws Exception {
+    public void deleteSecurityGroups(SecurityGroupApi securityGroupApi) throws Exception {
+        Preconditions.checkNotNull(securityGroupApi, "securityGroupApi");
+
         Set<SecurityGroup> groups = securityGroupApi.describeSecurityGroupsInRegion(region);
         Iterable<String> filtered = Iterables.filter(Iterables.transform(groups, new Function<SecurityGroup, String>() {
             public String apply(@Nullable SecurityGroup input) {
@@ -167,6 +170,7 @@ public class Ec2CleanUp {
             }
         }), Predicates.containsPattern("^" + regexp + "$"));
         LOG.info("Found {} matching SecurityGroups", Iterables.size(filtered));
+
         if (!check) {
             int deleted = 0;
             for (String name : filtered) {
@@ -184,10 +188,14 @@ public class Ec2CleanUp {
         }
     }
 
-    public void deleteVolumes(ElasticBlockStoreClient ebsApi, TagApi tagApi) throws Exception {
+    public void deleteVolumes(ElasticBlockStoreApi ebsApi, TagApi tagApi) throws Exception {
+        Preconditions.checkNotNull(ebsApi, "ebsApi");
+        Preconditions.checkNotNull(tagApi, "tagApi");
+
         Iterable<String> filtered = "".equals(regexp)
                 ? getVolumesWithNoName(ebsApi, tagApi)
                 : getVolumesMatchingName(tagApi, regexp);
+
         if (!check) {
             int deleted = 0;
             for (String id : filtered) {
@@ -205,7 +213,7 @@ public class Ec2CleanUp {
         }
     }
 
-    private Iterable<String> getVolumesWithNoName(ElasticBlockStoreClient ebsApi, TagApi tagApi) {
+    private Iterable<String> getVolumesWithNoName(ElasticBlockStoreApi ebsApi, TagApi tagApi) {
         Set<String> namedVolumes = tagApi.filter(new TagFilterBuilder().volume().key("Name").build())
                 .transform(new Function<Tag, String>() {
                     @Override public String apply(Tag input) {
@@ -250,21 +258,21 @@ public class Ec2CleanUp {
     }
 
     /**
-     * Create a jclouds {@link RestContext} to access the EC2 API.
+     * Create the jclouds EC2 API object.
      */
-    public RestContext<EC2Client, EC2AsyncClient> getContext() throws Exception {
+    public EC2Api getEC2Api() throws Exception {
         ImmutableSet<Module> modules = ImmutableSet.<Module>of(new SLF4JLoggingModule());
-        RestContext<EC2Client, EC2AsyncClient> context = ContextBuilder
+        EC2Api api = ContextBuilder
                 .newBuilder("aws-ec2")
                 .credentials(identity, credential)
                 .modules(modules)
-                .build();
-        return context;
+                .buildApi(EC2Api.class);
+        return api;
     }
 
     /**
      * Command-line entry point.
-     *
+     * <p>
      * See {@code README.md} for usage example.
      */
     public static void main(String...argv) throws Exception {
