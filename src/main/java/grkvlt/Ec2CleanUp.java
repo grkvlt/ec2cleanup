@@ -32,15 +32,14 @@ import org.jclouds.ec2.domain.RunningInstance;
 import org.jclouds.ec2.domain.SecurityGroup;
 import org.jclouds.ec2.domain.Tag;
 import org.jclouds.ec2.domain.Volume;
-import org.jclouds.ec2.features.TagApi;
 import org.jclouds.ec2.features.ElasticBlockStoreApi;
 import org.jclouds.ec2.features.InstanceApi;
 import org.jclouds.ec2.features.KeyPairApi;
 import org.jclouds.ec2.features.SecurityGroupApi;
+import org.jclouds.ec2.features.TagApi;
 import org.jclouds.ec2.util.TagFilterBuilder;
 import org.jclouds.javax.annotation.Nullable;
 import org.jclouds.logging.slf4j.config.SLF4JLoggingModule;
-import org.jclouds.rest.RestContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,13 +65,13 @@ public class Ec2CleanUp {
     private static final Logger LOG = LoggerFactory.getLogger(Ec2CleanUp.class);
 
     /** Amazon Europe Region. */
-    private static final String AWS_EUROPE = "eu-west-1";
+    public static final String AWS_EUROPE = "eu-west-1";
     /** Default jclouds object name pattern. */
-    private static final String JCLOUDS_NAME_REGEXP = "jclouds#.*";
+    public static final String JCLOUDS_NAME_REGEXP = "jclouds#.*";
     /** System property for AWS EC2 access key. */
-    private static final String IDENTITY_PROPERTY = "aws-ec2.identity";
+    public static final String IDENTITY_PROPERTY = "aws-ec2.identity";
     /** System property for AWS EC2 secret key. */
-    private static final String CREDENTIAL_PROPERTY = "aws-ec2.credential";
+    public static final String CREDENTIAL_PROPERTY = "aws-ec2.credential";
 
     private final String region;
     private final String regexp;
